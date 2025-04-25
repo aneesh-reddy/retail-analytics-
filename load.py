@@ -1,75 +1,80 @@
-#!/usr/bin/env python3
+# load.py
 import os
-from pathlib import Path
 from dotenv import load_dotenv
-import pandas as pd
 from azure.storage.blob import ContainerClient
+import pandas as pd
 from sqlalchemy import create_engine
 
-# 1. Load .env
-load_dotenv()
+# ─── CONFIG ─────────────────────────────────────────────────────
+load_dotenv()  # expects .env next to this file
 
-AZ_CONN_STR    = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-AZ_CONTAINER   = os.getenv("AZURE_CONTAINER_NAME", "rawdata")
-SQLALCHEMY_URL = os.getenv("AZURE_SQL_CONNECTION_STRING")
+AZ_CONN   = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER", "rawdata")
+SQL_CONN  = os.getenv("AZURE_SQL_CONNECTION_STRING")
+
+RAW_DIR   = "data/raw/8451_The_Complete_Journey_2_Sample-2"
+# ─────────────────────────────────────────────────────────────────
 
 def download_blobs():
-    client = ContainerClient.from_connection_string(AZ_CONN_STR, container_name=AZ_CONTAINER)
-    blobs = client.list_blobs(name_starts_with="8451_The_Complete_Journey_2_Sample-2/")
-    for blob in blobs:
-        local_path = Path("data/raw") / blob.name
-        local_path.parent.mkdir(parents=True, exist_ok=True)
+    client = ContainerClient.from_connection_string(AZ_CONN, container_name=CONTAINER)
+    os.makedirs(RAW_DIR, exist_ok=True)
+    print("▶️ Downloading blobs…")
+    for blob in client.list_blobs(name_starts_with="8451_The_Complete_Journey_2_Sample-2/"):
+        local_path = os.path.join("data/raw", blob.name)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "wb") as f:
-            data = client.get_blob_client(blob).download_blob().readall()
-            f.write(data)
-        print(f"Downloaded {blob.name}")
+            f.write(client.download_blob(blob.name).readall())
+        print("  •", blob.name)
 
 def discover_files():
-    files = {
-        "household":   list(Path("data/raw").rglob("400_households.csv")),
-        "transactions":list(Path("data/raw").rglob("400_transactions.csv")),
-        "products":    list(Path("data/raw").rglob("400_products.csv")),
-    }
-    missing = [k for k,v in files.items() if not v]
-    if missing:
-        raise FileNotFoundError(f"Missing files for: {missing}")
-    return files["household"][0], files["transactions"][0], files["products"][0]
+    h = os.path.join(RAW_DIR, "400_households.csv")
+    t = os.path.join(RAW_DIR, "400_transactions.csv")
+    p = os.path.join(RAW_DIR, "400_products.csv")
+    miss = [x for x in (h, t, p) if not os.path.exists(x)]
+    if miss:
+        raise FileNotFoundError(f"Missing files: {miss}")
+    return h, t, p
 
 def sanitize(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = [
-        c.strip().replace(" ", "_")[:128]
-        for c in df.columns
-    ]
+    df.columns = df.columns.str.strip()
+    for c in df.select_dtypes("object"):
+        df[c] = df[c].str.strip()
     return df
 
 def load_into_sql():
-    engine = create_engine(SQLALCHEMY_URL)
-    h_file, t_file, p_file = discover_files()
+    download_blobs()
+    hfile, tfile, pfile = discover_files()
 
-    df_h = sanitize(pd.read_csv(h_file))
-    df_p = sanitize(pd.read_csv(p_file))
-    df_t = sanitize(
-    pd.read_csv(
-        transactions_file,
-        parse_dates=["PURCHASE_"],          # parse that column as datetimes
-        infer_datetime_format=True,         # speed up parsing by inferring format
-        dayfirst=False                      # adjust if your dates are d/m/yyyy
-    )
-)
+    print("▶️ Reading & sanitizing CSVs…")
+    df_h = sanitize(pd.read_csv(hfile))
+    df_p = sanitize(pd.read_csv(pfile))
+    df_t = sanitize(pd.read_csv(
+        tfile,
+        parse_dates=["PURCHASE_"],
+        nrows=10_000
+    )).rename(columns={"PURCHASE_": "PURCHASE_DATE"})
 
+    print("▶️ Loading into Azure SQL…")
+    engine = create_engine(SQL_CONN)
     with engine.begin() as conn:
-        df_h.to_sql("households",   conn, if_exists="replace", index=False)
-        df_p.to_sql("products",     conn, if_exists="replace", index=False)
+        df_h.to_sql(
+            "households", conn,
+            if_exists="replace", index=False,
+            method="multi", chunksize=5_000
+        )
+        df_p.to_sql(
+            "products", conn,
+            if_exists="replace", index=False,
+            method="multi", chunksize=5_000
+        )
         df_t.to_sql(
-            "transactions",
-            conn,
-            if_exists="replace",
-            index=False,
-            method="multi",
-            chunksize=1_000
+            "transactions", conn,
+            if_exists="replace", index=False,
+            method="multi", chunksize=5_000
         )
 
+    print("✅ All tables loaded successfully.")
+
 if __name__ == "__main__":
-    download_blobs()
     load_into_sql()
