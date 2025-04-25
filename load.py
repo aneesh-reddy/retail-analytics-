@@ -1,43 +1,49 @@
-#!/usr/bin/env python3
+# load.py
 import os
-import urllib
 from dotenv import load_dotenv
+from azure.storage.blob import ContainerClient
 import pandas as pd
-from azure.storage.blob import BlobServiceClient
 from sqlalchemy import create_engine
 
-load_dotenv()
+# ─── CONFIG ─────────────────────────────────────────────────────
+load_dotenv()  # expects .env next to this file
 
-# ─── Configuration ──────────────────────────────────────────────────────────────
-STORAGE_CONN_STR = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-SQL_CONN_STR      = os.getenv("AZURE_SQL_CONNECTION_STRING")
-BLOB_CONTAINER    = os.getenv("AZURE_BLOB_CONTAINER_NAME", "rawdata")
-LOCAL_DATA_DIR    = "data/raw"
-# ────────────────────────────────────────────────────────────────────────────────
+AZ_CONN   = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER", "rawdata")
+SQL_CONN  = os.getenv("AZURE_SQL_CONNECTION_STRING")
+
+RAW_DIR   = "data/raw/8451_The_Complete_Journey_2_Sample-2"
+# ─────────────────────────────────────────────────────────────────
 
 def download_blobs():
-    """Download every blob under the container into data/raw/..."""
-    os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
-    client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
-    container = client.get_container_client(BLOB_CONTAINER)
+    client = ContainerClient.from_connection_string(AZ_CONN, container_name=CONTAINER)
+    os.makedirs(RAW_DIR, exist_ok=True)
+    print("▶️ Downloading blobs…")
+    for blob in client.list_blobs(name_starts_with="8451_The_Complete_Journey_2_Sample-2/"):
+        local_path = os.path.join("data/raw", blob.name)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(client.download_blob(blob.name).readall())
+        print("  •", blob.name)
 
-    for blob in container.list_blobs():
-        dest = os.path.join(LOCAL_DATA_DIR, blob.name)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as f:
-            f.write(container.download_blob(blob).readall())
-        print(f"Downloaded: {blob.name}")
 
-def sanitize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Strip whitespace, replace spaces with _, and truncate names to 128 chars."""
-    clean = []
-    for c in df.columns:
-        c2 = c.strip().replace(" ", "_")
-        if len(c2) > 128:
-            c2 = c2[:128]
-        clean.append(c2)
-    df.columns = clean
+def discover_files():
+    h = os.path.join(RAW_DIR, "400_households.csv")
+    t = os.path.join(RAW_DIR, "400_transactions.csv")
+    p = os.path.join(RAW_DIR, "400_products.csv")
+    miss = [x for x in (h, t, p) if not os.path.exists(x)]
+    if miss:
+        raise FileNotFoundError(f"Missing files: {miss}")
+    return h, t, p
+
+
+def sanitize(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = df.columns.str.strip()
+    for c in df.select_dtypes("object"):
+        df[c] = df[c].str.strip()
     return df
+
 
 def load_into_sql():
     download_blobs()
@@ -58,7 +64,6 @@ def load_into_sql():
     )
 
     print("▶️ Loading into Azure SQL…")
-    # turn on fast_executemany for pyodbc
     engine = create_engine(
         SQL_CONN,
         connect_args={"fast_executemany": True}
@@ -83,3 +88,6 @@ def load_into_sql():
 
     print("✅ All tables loaded successfully.")
 
+
+if __name__ == "__main__":
+    load_into_sql()
