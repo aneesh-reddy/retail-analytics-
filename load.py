@@ -49,11 +49,14 @@ def load_into_sql():
 
     df_h = sanitize(pd.read_csv(h_file))
     df_p = sanitize(pd.read_csv(p_file))
-    df_t = sanitize(pd.read_csv(
-        t_file,
-        parse_dates=["PURCHASE_"],  # adjust to your date column name
-        nrows=10_000
-    ))
+    df_t = sanitize(
+    pd.read_csv(
+        transactions_file,
+        parse_dates=["PURCHASE_"],          # parse that column as datetimes
+        infer_datetime_format=True,         # speed up parsing by inferring format
+        dayfirst=False                      # adjust if your dates are d/m/yyyy
+    )
+)
 
     with engine.begin() as conn:
         df_h.to_sql("households",   conn, if_exists="replace", index=False)
