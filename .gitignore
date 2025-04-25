@@ -1,0 +1,16 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# Data files
+data/raw/
+*.csv
+*.zip
+
+# IDE / OS
+.DS_Store
+.vscode/
