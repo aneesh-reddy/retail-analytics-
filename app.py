@@ -1,17 +1,18 @@
+# app.py
+import os
 import streamlit as st
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 import pandas as pd
-import os
-from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 AZURE_SQL_CONNECTION_STRING = os.getenv("AZURE_SQL_CONNECTION_STRING")
 
-# SQLAlchemy engine
+# SQLAlchemy engine (with pymssql)
 engine = create_engine(AZURE_SQL_CONNECTION_STRING)
 
-# Session state
+# Initialize session state
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
@@ -32,7 +33,10 @@ def register():
                         text("INSERT INTO users (username, password, email) VALUES (:u, :p, :e)"),
                         {"u": username, "p": password, "e": email}
                     )
-                st.success("Registered successfully! You can now log in.")
+                st.success("Registered successfully! Please login.")
+                st.session_state.logged_in = False
+                st.session_state.username = username
+                st.experimental_rerun()
             except Exception as e:
                 st.error(f"Registration failed: {e}")
         else:
@@ -46,19 +50,24 @@ def login():
 
     if st.button("Login"):
         if username and password:
-            with engine.begin() as conn:
-                result = conn.execute(
-                    text("SELECT * FROM users WHERE username = :u AND password = :p"),
-                    {"u": username, "p": password}
-                ).fetchone()
+            try:
+                with engine.begin() as conn:
+                    result = conn.execute(
+                        text("SELECT * FROM users WHERE username = :u AND password = :p"),
+                        {"u": username, "p": password}
+                    ).fetchone()
+
                 if result:
                     st.session_state.logged_in = True
                     st.session_state.username = username
                     st.success(f"Welcome, {username}!")
+                    st.experimental_rerun()
                 else:
                     st.error("Invalid username or password.")
+            except Exception as e:
+                st.error(f"Login failed: {e}")
         else:
-            st.error("Please enter both username and password.")
+            st.error("Please enter both fields.")
 
 def get_data(hshd_num):
     query = f"""
